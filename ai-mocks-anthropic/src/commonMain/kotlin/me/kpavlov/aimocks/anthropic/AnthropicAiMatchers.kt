@@ -2,7 +2,6 @@ package me.kpavlov.aimocks.anthropic
 
 import com.anthropic.models.MessageCreateParams
 import com.anthropic.models.MessageParam
-import com.anthropic.models.TextBlockParam
 import io.kotest.matchers.Matcher
 import io.kotest.matchers.MatcherResult
 import kotlin.jvm.optionals.getOrNull
@@ -10,18 +9,29 @@ import kotlin.jvm.optionals.getOrNull
 internal object AnthropicAiMatchers {
     fun systemMessageContains(string: String): Matcher<MessageCreateParams.Body?> =
         object : Matcher<MessageCreateParams.Body?> {
-            override fun test(value: MessageCreateParams.Body?): MatcherResult =
-                MatcherResult(
-                    value != null &&
-                        value
-                            .system()
-                            .getOrNull()
-                            ?.string()
-                            ?.getOrNull()
-                            ?.contains(string) == true,
+            override fun test(value: MessageCreateParams.Body?): MatcherResult {
+                val passed =
+                    if (value == null) {
+                        false
+                    } else if (value.system().isPresent) {
+                        val system = value.system().orElseThrow()
+                        if (system.isString()) {
+                            system.asString().contains(string) == true
+                        } else if (system.isTextBlockParams()) {
+                            system.asTextBlockParams().any { it.text().contains(string) }
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+
+                return MatcherResult(
+                    passed,
                     { "System message should contain \"$string\"" },
                     { "System message should not contain \"$string\"" },
                 )
+            }
 
             override fun toString(): String = "System message should contain \"$string\""
         }
@@ -29,26 +39,23 @@ internal object AnthropicAiMatchers {
     fun userMessageContains(string: String): Matcher<MessageCreateParams.Body?> =
         object : Matcher<MessageCreateParams.Body?> {
             override fun test(value: MessageCreateParams.Body?): MatcherResult {
-                val content = findUserMessageContent(value)
-                val result: Boolean =
-                    content != null &&
-                        findTextContent(content) {
-                            it?.text()?.contains(string) == true
-                        } != null
+                val passed =
+                    findUserMessages(value)
+                        .any { checkTextBlockContains(it, string) }
                 return MatcherResult(
-                    result,
+                    passed,
                     { "User message should contain \"$string\"" },
                     { "User message should not contain \"$string\"" },
                 )
             }
 
-            private fun findUserMessageContent(
+            private fun findUserMessages(
                 value: MessageCreateParams.Body?,
-            ): MessageParam.Content? =
+            ): List<MessageParam.Content> =
                 value
                     ?.messages()
-                    ?.find { it.role() == MessageParam.Role.USER }
-                    ?.content()
+                    ?.filter { it.role() == MessageParam.Role.USER }
+                    ?.mapNotNull { it.content() } ?: emptyList()
 
             override fun toString(): String = "User message should contain \"$string\""
         }
@@ -70,13 +77,18 @@ internal object AnthropicAiMatchers {
             override fun toString(): String = "metadata.user_id should be \"$userId\""
         }
 
-    private fun findTextContent(
+    private fun checkTextBlockContains(
         content: MessageParam.Content?,
-        predicate: (TextBlockParam?) -> Boolean,
-    ): TextBlockParam? =
-        content
-            ?.blockParams()
-            ?.getOrNull()
-            ?.mapNotNull { it.text().getOrNull() }
-            ?.firstOrNull(predicate)
+        string: String,
+    ): Boolean =
+        if (content?.string()?.isPresent == true) {
+            content.string().getOrNull()?.contains(string) == true
+        } else {
+            content
+                ?.blockParams()
+                ?.getOrNull()
+                ?.mapNotNull { it.text().getOrNull() }
+                ?.mapNotNull { it.text() }
+                ?.any { it.contains(string) == true } == true
+        }
 }
